@@ -31,6 +31,16 @@ export default class ParataxisPlugin extends Plugin {
         void this.processActiveCanvas("regenerate");
       },
     });
+
+    this.registerEvent(
+      this.app.workspace.on("file-open", (file) => {
+        if (file && file.extension === "canvas") {
+          window.setTimeout(() => {
+            void this.processCanvasFile(file, "update");
+          }, 500);
+        }
+      })
+    );
   }
 
   onunload() {}
@@ -51,8 +61,12 @@ export default class ParataxisPlugin extends Plugin {
       new Notice("No active canvas file.");
       return;
     }
+    await this.processCanvasFile(activeFile, mode);
+  }
 
-    const raw = await this.app.vault.read(activeFile);
+  /** Process a specific canvas file */
+  async processCanvasFile(file: TFile, mode: "update" | "regenerate") {
+    const raw = await this.app.vault.read(file);
     let canvas: CanvasData;
     try {
       canvas = JSON.parse(raw) as CanvasData;
@@ -74,7 +88,7 @@ export default class ParataxisPlugin extends Plugin {
     }
 
     if (changed) {
-      await this.app.vault.modify(activeFile, JSON.stringify(canvas, null, "\t"));
+      await this.app.vault.modify(file, JSON.stringify(canvas, null, "\t"));
       new Notice(`Parataxis: ${mode === "update" ? "updated" : "regenerated"} ${bindings.length} group(s).`);
     } else {
       new Notice("Parataxis: no changes needed.");
