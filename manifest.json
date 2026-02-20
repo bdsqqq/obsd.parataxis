@@ -1,0 +1,10 @@
+{
+  "id": "dot-parataxis",
+  "name": ".parataxis",
+  "version": "0.1.0",
+  "minAppVersion": "1.6.0",
+  "description": "Canvas-native query results — connect a source node to a group with an edge labeled 'parataxis' and watch it populate.",
+  "author": "bdsqqq",
+  "authorUrl": "https://github.com/bdsqqq",
+  "isDesktopOnly": false
+}

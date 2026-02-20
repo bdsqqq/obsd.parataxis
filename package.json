@@ -1,0 +1,28 @@
+{
+  "name": "obsd-dot-parataxis",
+  "version": "0.1.0",
+  "description": "Canvas-native query results — connect a source node to a group with an edge labeled 'parataxis' and watch it populate",
+  "main": "main.js",
+  "scripts": {
+    "dev": "node esbuild.config.mjs",
+    "build": "node esbuild.config.mjs production",
+    "lint": "eslint src",
+    "test": "vitest run"
+  },
+  "license": "MIT",
+  "pnpm": {
+    "onlyBuiltDependencies": ["esbuild"]
+  },
+  "devDependencies": {
+    "@types/node": "^18.0.0",
+    "@typescript-eslint/parser": "^8.52.0",
+    "builtin-modules": "^3.3.0",
+    "esbuild": "^0.21.0",
+    "eslint": "^9.39.2",
+    "eslint-plugin-obsidianmd": "^0.1.9",
+    "globals": "^16.1.0",
+    "obsidian": "^1.8.0",
+    "typescript": "^5.4.0",
+    "vitest": "^3.2.1"
+  }
+}
