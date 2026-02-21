@@ -18,8 +18,7 @@ export class ParataxisSettingTab extends PluginSettingTab {
       .setDesc("Only edges with this label will trigger parataxis processing.")
       .addText((text) =>
         text
-          // eslint-disable-next-line obsidianmd/ui/sentence-case
-          .setPlaceholder("parataxis")
+          .setPlaceholder("Parataxis")
           .setValue(this.plugin.settings.edgeLabel)
           .onChange(async (value) => {
             this.plugin.settings.edgeLabel = value || "parataxis";

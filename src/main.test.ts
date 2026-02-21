@@ -1,4 +1,3 @@
-/* eslint-disable @typescript-eslint/no-unsafe-return, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access */
 import { describe, it, expect } from "vitest";
 import { TFile } from "obsidian";
 import ParataxisPlugin from "./main";
@@ -12,9 +11,11 @@ function createPlugin(opts?: {
   linkpathDest?: Map<string, TFile>;
 }) {
   const files = opts?.files ?? [];
-  const cacheMap = opts?.cacheMap ?? new Map();
-  const backlinksMap = opts?.backlinksMap ?? new Map();
-  const linkpathDest = opts?.linkpathDest ?? new Map();
+  const cacheMap =
+    opts?.cacheMap ??
+    new Map<string, { tags?: { tag: string }[]; frontmatter?: { tags?: string[] } }>();
+  const backlinksMap = opts?.backlinksMap ?? new Map<string, string[]>();
+  const linkpathDest = opts?.linkpathDest ?? new Map<string, TFile>();
 
   const filesByPath = new Map<string, TFile>();
   for (const f of files) filesByPath.set(f.path, f);

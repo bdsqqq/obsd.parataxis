@@ -70,8 +70,9 @@ export default class ParataxisPlugin extends Plugin {
       this.app.workspace.on("layout-change", () => {
         this.app.workspace.iterateAllLeaves((leaf) => {
           // @ts-expect-error — canvas is an internal property on the canvas view
-          // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
-          const canvas: { constructor: { prototype: object }; edges: Map<string, object> } | undefined = leaf.view?.canvas;
+          const canvas = leaf.view?.canvas as
+            | { constructor: { prototype: object }; edges: Map<string, object> }
+            | undefined;
           if (canvas) this.patchCanvas(canvas);
         });
       })
@@ -86,8 +87,7 @@ export default class ParataxisPlugin extends Plugin {
           void node;
           menu.addItem((item) => {
             item
-              // eslint-disable-next-line obsidianmd/ui/sentence-case
-              .setTitle("Parataxis: Update")
+              .setTitle("Parataxis: update")
               .setIcon("workflow")
               .onClick(() => {
                 const activeFile = this.app.workspace.getActiveFile();
@@ -98,8 +98,7 @@ export default class ParataxisPlugin extends Plugin {
           });
           menu.addItem((item) => {
             item
-              // eslint-disable-next-line obsidianmd/ui/sentence-case
-              .setTitle("Parataxis: Regenerate")
+              .setTitle("Parataxis: regenerate")
               .setIcon("refresh-cw")
               .onClick(() => {
                 const activeFile = this.app.workspace.getActiveFile();
@@ -119,16 +118,14 @@ export default class ParataxisPlugin extends Plugin {
     if (this.patchedCanvasPrototypes.has(proto)) return;
     this.patchedCanvasPrototypes.add(proto);
 
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
-    const patchEdgeBound: (edge: Record<string, (...args: unknown[]) => unknown>) => void =
-      this.patchEdge.bind(this);
+    const patchEdgeBound = this.patchEdge.bind(this) as (
+      edge: Record<string, (...args: unknown[]) => unknown>,
+    ) => void;
     const uninstallAddEdge = around(proto as Record<string, (...args: unknown[]) => unknown>, {
       addEdge(next) {
         return function (this: unknown, edge: unknown) {
-          // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
-          const result = next.call(this, edge);
+          const result = next.call(this, edge) as unknown;
           patchEdgeBound(edge as Record<string, (...args: unknown[]) => unknown>);
-          // eslint-disable-next-line @typescript-eslint/no-unsafe-return
           return result;
         };
       },
@@ -149,8 +146,7 @@ export default class ParataxisPlugin extends Plugin {
     const uninstall = around(edge, {
       setData(next) {
         return function (this: unknown, data: unknown, ...args: unknown[]) {
-          // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
-          const result = next.call(this, data, ...args);
+          const result = next.call(this, data, ...args) as unknown;
           const d = data as { label?: string } | null;
           if (
             typeof d?.label === "string" &&
@@ -161,7 +157,6 @@ export default class ParataxisPlugin extends Plugin {
               void processFile(activeFile, "update");
             }
           }
-          // eslint-disable-next-line @typescript-eslint/no-unsafe-return
           return result;
         };
       },
@@ -304,9 +299,9 @@ export default class ParataxisPlugin extends Plugin {
 
     const activeLeaf = this.app.workspace.getMostRecentLeaf();
     // @ts-expect-error — canvas is an internal property on the canvas view
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
-    const canvas: { nodes?: Map<string, { child?: { controller?: BasesControllerLike } }> } | undefined =
-      activeLeaf?.view?.canvas;
+    const canvas = activeLeaf?.view?.canvas as
+      | { nodes?: Map<string, { child?: { controller?: BasesControllerLike } }> }
+      | undefined;
 
     if (!canvas?.nodes) {
       new Notice("Parataxis: no active canvas view.");
@@ -365,8 +360,10 @@ export default class ParataxisPlugin extends Plugin {
     const getCanvas = (): Map<string, LiveNode> | undefined => {
       const leaf = this.app.workspace.getMostRecentLeaf();
       // @ts-expect-error — canvas is an internal property on the canvas view
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
-      return leaf?.view?.canvas?.nodes as Map<string, LiveNode> | undefined;
+      const canvasObj = leaf?.view?.canvas as
+        | { nodes?: Map<string, LiveNode> }
+        | undefined;
+      return canvasObj?.nodes;
     };
 
     // poll until at least one new node is rendered (has markdown preview DOM)
@@ -390,13 +387,11 @@ export default class ParataxisPlugin extends Plugin {
       const container = node.nodeEl.querySelector(".markdown-preview-view");
       if (!(container instanceof HTMLElement)) continue;
 
-      // measure natural content height — direct style manipulation required
-      // for the measure-then-restore pattern (no CSS class equivalent)
-      // eslint-disable-next-line obsidianmd/no-static-styles-assignment
-      container.style.height = "min-content";
+      // measure natural content height — setCssStyles is Obsidian's
+      // augmentation on HTMLElement for lint-safe style manipulation
+      container.setCssStyles({ height: "min-content" });
       const naturalHeight = container.clientHeight;
-      // eslint-disable-next-line obsidianmd/no-static-styles-assignment
-      container.style.height = "";
+      container.setCssStyles({ height: "" });
 
       if (naturalHeight > 0) {
         const data = node.getData();
