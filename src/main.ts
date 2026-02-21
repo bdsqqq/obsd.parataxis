@@ -356,24 +356,34 @@ export default class ParataxisPlugin extends Plugin {
   private async autoResizeNodes(nodeIds: string[]): Promise<void> {
     if (nodeIds.length === 0) return;
 
-    // wait for canvas to re-render from the modified JSON
-    await new Promise<void>((r) => window.setTimeout(r, 200));
+    type LiveNode = {
+      nodeEl?: HTMLElement;
+      getData?: () => Record<string, unknown>;
+      setData?: (data: Record<string, unknown>) => void;
+    };
 
-    const activeLeaf = this.app.workspace.getMostRecentLeaf();
-    // @ts-expect-error — canvas is an internal property on the canvas view
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
-    const canvas: {
-      nodes?: Map<string, {
-        nodeEl?: HTMLElement;
-        getData?: () => Record<string, unknown>;
-        setData?: (data: Record<string, unknown>) => void;
-      }>;
-    } | undefined = activeLeaf?.view?.canvas;
+    const getCanvas = (): Map<string, LiveNode> | undefined => {
+      const leaf = this.app.workspace.getMostRecentLeaf();
+      // @ts-expect-error — canvas is an internal property on the canvas view
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+      return leaf?.view?.canvas?.nodes as Map<string, LiveNode> | undefined;
+    };
 
-    if (!canvas?.nodes) return;
+    // poll until at least one new node is rendered (has markdown preview DOM)
+    const sampleId = nodeIds[0];
+    const deadline = performance.now() + 2_000;
+    while (performance.now() < deadline) {
+      const nodes = getCanvas();
+      const sample = nodes?.get(sampleId);
+      if (sample?.nodeEl?.querySelector(".markdown-preview-view")) break;
+      await new Promise<void>((r) => window.setTimeout(r, 50));
+    }
+
+    const canvasNodes = getCanvas();
+    if (!canvasNodes) return;
 
     const idSet = new Set(nodeIds);
-    for (const [id, node] of canvas.nodes) {
+    for (const [id, node] of canvasNodes) {
       if (!idSet.has(id)) continue;
       if (!node.nodeEl || !node.getData || !node.setData) continue;
 
