@@ -1,5 +1,4 @@
 import { Menu, Notice, Plugin, TFile } from "obsidian";
-import { around } from "monkey-around";
 import { DEFAULT_SETTINGS } from "./defaults";
 import { ParataxisSettingTab } from "./settings";
 import type {
@@ -25,14 +24,8 @@ type ResultsMapLike = {
 export default class ParataxisPlugin extends Plugin {
   settings: ParataxisSettings = DEFAULT_SETTINGS;
 
-  /** tracks canvas prototypes already patched to avoid double-patching addEdge */
-  private patchedCanvasPrototypes = new WeakSet<object>();
-
   /** concurrent execution guard for processCanvasFile */
   private processing = false;
-
-  /** debounce handle for the file-open auto-trigger */
-  private fileOpenTimer = 0;
 
   async onload() {
     await this.loadSettings();
@@ -53,30 +46,6 @@ export default class ParataxisPlugin extends Plugin {
         void this.processActiveCanvas("regenerate");
       },
     });
-
-    this.registerEvent(
-      this.app.workspace.on("file-open", (file) => {
-        if (!file || file.extension !== "canvas") return;
-
-        window.clearTimeout(this.fileOpenTimer);
-        this.fileOpenTimer = window.setTimeout(() => {
-          void this.processCanvasFile(file, "update");
-        }, 500);
-      })
-    );
-
-    // patch canvas views to detect edge labeling in real time
-    this.registerEvent(
-      this.app.workspace.on("layout-change", () => {
-        this.app.workspace.iterateAllLeaves((leaf) => {
-          // @ts-expect-error — canvas is an internal property on the canvas view
-          const canvas = leaf.view?.canvas as
-            | { constructor: { prototype: object }; edges: Map<string, object> }
-            | undefined;
-          if (canvas) this.patchCanvas(canvas);
-        });
-      })
-    );
 
     // right-click context menu on canvas nodes
     this.registerEvent(
@@ -112,58 +81,6 @@ export default class ParataxisPlugin extends Plugin {
     );
   }
 
-  /** monkey-patch a canvas prototype so new edges trigger processing on label match */
-  private patchCanvas(canvas: { constructor: { prototype: object }; edges: Map<string, object> }) {
-    const proto = canvas.constructor.prototype;
-    if (this.patchedCanvasPrototypes.has(proto)) return;
-    this.patchedCanvasPrototypes.add(proto);
-
-    const patchEdgeBound = this.patchEdge.bind(this) as (
-      edge: Record<string, (...args: unknown[]) => unknown>,
-    ) => void;
-    const uninstallAddEdge = around(proto as Record<string, (...args: unknown[]) => unknown>, {
-      addEdge(next) {
-        return function (this: unknown, edge: unknown) {
-          const result = next.call(this, edge) as unknown;
-          patchEdgeBound(edge as Record<string, (...args: unknown[]) => unknown>);
-          return result;
-        };
-      },
-    });
-    this.register(uninstallAddEdge);
-
-    // patch edges already present on this canvas
-    for (const [, edge] of canvas.edges) {
-      this.patchEdge(edge as Record<string, (...args: unknown[]) => unknown>);
-    }
-  }
-
-  /** monkey-patch an individual edge's setData to detect label changes */
-  private patchEdge(edge: Record<string, (...args: unknown[]) => unknown>) {
-    const getSettings = () => this.settings;
-    const getActiveFile = () => this.app.workspace.getActiveFile();
-    const processFile = (file: TFile, mode: "update" | "regenerate") => this.processCanvasFile(file, mode);
-    const uninstall = around(edge, {
-      setData(next) {
-        return function (this: unknown, data: unknown, ...args: unknown[]) {
-          const result = next.call(this, data, ...args) as unknown;
-          const d = data as { label?: string } | null;
-          if (
-            typeof d?.label === "string" &&
-            d.label.toLowerCase() === getSettings().edgeLabel.toLowerCase()
-          ) {
-            const activeFile = getActiveFile();
-            if (activeFile?.extension === "canvas") {
-              void processFile(activeFile, "update");
-            }
-          }
-          return result;
-        };
-      },
-    });
-    this.register(uninstall);
-  }
-
   onunload() {}
 
   async loadSettings() {
@@ -189,7 +106,6 @@ export default class ParataxisPlugin extends Plugin {
   async processCanvasFile(file: TFile, mode: "update" | "regenerate") {
     if (this.processing) return;
     this.processing = true;
-    window.clearTimeout(this.fileOpenTimer);
 
     try {
       const raw = await this.app.vault.read(file);
@@ -224,7 +140,6 @@ export default class ParataxisPlugin extends Plugin {
         new Notice("Parataxis: no changes needed.");
       }
     } finally {
-      window.clearTimeout(this.fileOpenTimer);
       this.processing = false;
     }
   }

@@ -27,7 +27,5 @@
     "typescript": "^5.4.0",
     "vitest": "^3.2.1"
   },
-  "dependencies": {
-    "monkey-around": "^3.0.0"
-  }
+  "dependencies": {}
 }
