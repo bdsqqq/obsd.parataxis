@@ -23,6 +23,12 @@ type ResultsMapLike = {
   size: number;
 };
 
+/** Shape of the internal BasesView state stored on the leaf */
+type BasesViewStateLike = {
+  file?: string;
+  viewName?: string;
+};
+
 export default class ParataxisPlugin extends Plugin {
   settings: ParataxisSettings = DEFAULT_SETTINGS;
 
@@ -293,6 +299,9 @@ export default class ParataxisPlugin extends Plugin {
       return [];
     }
 
+    // subpath selects a named view (e.g. "#Read" → view "Read")
+    const viewName = node.subpath?.replace(/^#/, "") || undefined;
+
     const TIMEOUT_MS = 5_000;
     const POLL_MS = 50;
 
@@ -302,15 +311,17 @@ export default class ParataxisPlugin extends Plugin {
     try {
       leaf = this.app.workspace.getLeaf("tab");
 
+      // append fragment so Bases opens the correct named view
+      const linktext = viewName ? `${baseFile.path}#${viewName}` : baseFile.path;
       await this.app.workspace.openLinkText(
-        baseFile.path,
+        linktext,
         baseFile.path,
         false,
         { active: false }
       );
 
       // wait for the BasesView controller to appear and produce results
-      const controller = await this.pollBasesController(leaf, TIMEOUT_MS, POLL_MS);
+      const controller = await this.pollBasesController(leaf, TIMEOUT_MS, POLL_MS, viewName);
       if (!controller) {
         new Notice("Parataxis: base query timed out waiting for results.");
         return [];
@@ -336,18 +347,30 @@ export default class ParataxisPlugin extends Plugin {
 
   /**
    * Poll a leaf until its BasesView controller has settled results.
-   * Returns the controller or null on timeout.
+   * When viewName is provided, also verifies the leaf loaded the correct
+   * named view before accepting results — prevents reading the wrong
+   * view's data when two edges target the same .base with different subpaths.
    */
   private async pollBasesController(
     leaf: WorkspaceLeaf,
     timeoutMs: number,
-    pollMs: number
+    pollMs: number,
+    viewName?: string
   ): Promise<BasesControllerLike | null> {
     const deadline = performance.now() + timeoutMs;
 
     while (performance.now() < deadline) {
       const vs: ViewState = leaf.getViewState();
       if (vs.type === "bases") {
+        // when a specific view was requested, wait until it loads
+        if (viewName) {
+          const state = (vs.state ?? {}) as BasesViewStateLike;
+          if (state.viewName !== viewName) {
+            await new Promise<void>((r) => window.setTimeout(r, pollMs));
+            continue;
+          }
+        }
+
         // @ts-expect-error — controller is an internal Bases property not in public API
         const controller = leaf.view.controller as BasesControllerLike | undefined;
         if (controller?.results && typeof (controller.results as ResultsMapLike).keys === "function") {
@@ -361,6 +384,12 @@ export default class ParataxisPlugin extends Plugin {
     // best-effort: return controller even if initialScan hasn't finished
     const vs: ViewState = leaf.getViewState();
     if (vs.type === "bases") {
+      // don't return best-effort results from the wrong view
+      if (viewName) {
+        const state = (vs.state ?? {}) as BasesViewStateLike;
+        if (state.viewName !== viewName) return null;
+      }
+
       // @ts-expect-error — controller is an internal Bases property not in public API
       const controller = leaf.view.controller as BasesControllerLike | undefined;
       if (controller?.results && typeof (controller.results as ResultsMapLike).keys === "function") {
