@@ -35,11 +35,21 @@ export default class ParataxisPlugin extends Plugin {
   /** tracks canvas prototypes already patched to avoid double-patching addEdge */
   private patchedCanvasPrototypes = new WeakSet<object>();
 
-  /**
-   * re-entrancy guard — resolveBase opens/closes hidden tabs which fires
-   * file-open back on the canvas, creating an infinite loop without this.
-   */
+  /** concurrent execution guard for processCanvasFile */
   private processing = false;
+
+  /**
+   * depth counter — positive while resolveBase is manipulating hidden tabs.
+   * file-open events fired by our own setActiveLeaf/detach are suppressed
+   * when this is > 0, breaking the open→process→open→process loop.
+   */
+  private suppressFileOpen = 0;
+
+  /** debounce handle for the file-open auto-trigger */
+  private fileOpenTimer = 0;
+
+  /** per-file cooldown — timestamps keyed by canvas path */
+  private lastProcessedAt = new Map<string, number>();
 
   async onload() {
     await this.loadSettings();
@@ -63,11 +73,16 @@ export default class ParataxisPlugin extends Plugin {
 
     this.registerEvent(
       this.app.workspace.on("file-open", (file) => {
-        if (file && file.extension === "canvas") {
-          window.setTimeout(() => {
-            void this.processCanvasFile(file, "update");
-          }, 500);
-        }
+        if (!file || file.extension !== "canvas") return;
+        if (this.suppressFileOpen > 0) return;
+
+        window.clearTimeout(this.fileOpenTimer);
+        this.fileOpenTimer = window.setTimeout(() => {
+          if (this.suppressFileOpen > 0) return;
+          const last = this.lastProcessedAt.get(file.path) ?? 0;
+          if (performance.now() - last < 2_000) return;
+          void this.processCanvasFile(file, "update");
+        }, 500);
       })
     );
 
@@ -200,6 +215,7 @@ export default class ParataxisPlugin extends Plugin {
   async processCanvasFile(file: TFile, mode: "update" | "regenerate") {
     if (this.processing) return;
     this.processing = true;
+    window.clearTimeout(this.fileOpenTimer);
 
     try {
       const raw = await this.app.vault.read(file);
@@ -232,6 +248,8 @@ export default class ParataxisPlugin extends Plugin {
         new Notice("Parataxis: no changes needed.");
       }
     } finally {
+      window.clearTimeout(this.fileOpenTimer);
+      this.lastProcessedAt.set(file.path, performance.now());
       this.processing = false;
     }
   }
@@ -321,6 +339,7 @@ export default class ParataxisPlugin extends Plugin {
     const previousLeaf = this.app.workspace.getMostRecentLeaf();
     let leaf: WorkspaceLeaf | null = null;
 
+    this.suppressFileOpen++;
     try {
       leaf = this.app.workspace.getLeaf("tab");
 
@@ -355,6 +374,10 @@ export default class ParataxisPlugin extends Plugin {
       try {
         leaf?.detach();
       } catch { /* ignore */ }
+
+      // release suppression on next macrotask — covers async file-open
+      // dispatch from setActiveLeaf/detach across obsidian versions
+      window.setTimeout(() => { this.suppressFileOpen--; }, 0);
     }
   }
 
