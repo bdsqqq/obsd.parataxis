@@ -1,4 +1,5 @@
 import { Notice, Plugin, TFile } from "obsidian";
+import type { ViewState, WorkspaceLeaf } from "obsidian";
 import { DEFAULT_SETTINGS } from "./defaults";
 import { ParataxisSettingTab } from "./settings";
 import type {
@@ -8,6 +9,18 @@ import type {
   ParataxisSettings,
   SourceType,
 } from "./types";
+
+/** Minimal shape of the internal Bases controller (not in public API) */
+type BasesControllerLike = {
+  results?: unknown;
+  initialScan?: unknown;
+};
+
+/** Minimal shape of the results Map (keys are TFile instances) */
+type ResultsMapLike = {
+  keys: () => IterableIterator<unknown>;
+  size: number;
+};
 
 export default class ParataxisPlugin extends Plugin {
   settings: ParataxisSettings = DEFAULT_SETTINGS;
@@ -152,12 +165,113 @@ export default class ParataxisPlugin extends Plugin {
     return this.getBacklinkFiles(file);
   }
 
-  /** Query a .base file for results — placeholder for base evaluation */
-  async resolveBase(_node: CanvasNode): Promise<TFile[]> {
-    // TODO: implement base query evaluation
-    // Options: CLI (obsidian base:query), hidden leaf, or internal API
-    new Notice("Base query source is not yet implemented.");
-    return [];
+  /**
+   * Query a .base file for its matching files by opening it in a background
+   * leaf and reading controller.results after they settle.
+   *
+   * There is no headless API for evaluating Bases — this workaround opens
+   * the Base in a new tab, polls the internal controller until results
+   * arrive or a timeout elapses, then extracts TFiles and cleans up.
+   *
+   * @see https://forum.obsidian.md/t/provide-api-access-to-the-results-of-bases-view/110660
+   */
+  async resolveBase(node: CanvasNode): Promise<TFile[]> {
+    if (!node.file) return [];
+
+    const baseFile = this.app.vault.getAbstractFileByPath(node.file);
+    if (!(baseFile instanceof TFile)) {
+      new Notice(`Parataxis: base file not found: ${node.file}`);
+      return [];
+    }
+
+    const TIMEOUT_MS = 5_000;
+    const POLL_MS = 50;
+
+    const previousLeaf = this.app.workspace.getMostRecentLeaf();
+    let leaf: WorkspaceLeaf | null = null;
+
+    try {
+      leaf = this.app.workspace.getLeaf("tab");
+
+      await this.app.workspace.openLinkText(
+        baseFile.path,
+        baseFile.path,
+        false,
+        { active: false }
+      );
+
+      // wait for the BasesView controller to appear and produce results
+      const controller = await this.pollBasesController(leaf, TIMEOUT_MS, POLL_MS);
+      if (!controller) {
+        new Notice("Parataxis: base query timed out waiting for results.");
+        return [];
+      }
+
+      return this.extractFilesFromBasesResults(controller);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      new Notice(`Parataxis: base query failed — ${msg}`);
+      return [];
+    } finally {
+      try {
+        if (leaf && previousLeaf && previousLeaf !== leaf) {
+          this.app.workspace.setActiveLeaf(previousLeaf, { focus: true });
+        }
+      } catch { /* ignore */ }
+
+      try {
+        leaf?.detach();
+      } catch { /* ignore */ }
+    }
+  }
+
+  /**
+   * Poll a leaf until its BasesView controller has settled results.
+   * Returns the controller or null on timeout.
+   */
+  private async pollBasesController(
+    leaf: WorkspaceLeaf,
+    timeoutMs: number,
+    pollMs: number
+  ): Promise<BasesControllerLike | null> {
+    const deadline = performance.now() + timeoutMs;
+
+    while (performance.now() < deadline) {
+      const vs: ViewState = leaf.getViewState();
+      if (vs.type === "bases") {
+        // @ts-expect-error — controller is an internal Bases property not in public API
+        const controller = leaf.view.controller as BasesControllerLike | undefined;
+        if (controller?.results && typeof (controller.results as ResultsMapLike).keys === "function") {
+          // settled once initialScan flips to false, or best-effort on timeout
+          if (controller.initialScan === false) return controller;
+        }
+      }
+      await new Promise<void>((r) => window.setTimeout(r, pollMs));
+    }
+
+    // best-effort: return controller even if initialScan hasn't finished
+    const vs: ViewState = leaf.getViewState();
+    if (vs.type === "bases") {
+      // @ts-expect-error — controller is an internal Bases property not in public API
+      const controller = leaf.view.controller as BasesControllerLike | undefined;
+      if (controller?.results && typeof (controller.results as ResultsMapLike).keys === "function") {
+        return controller;
+      }
+    }
+
+    return null;
+  }
+
+  /** Extract TFile instances from the controller.results Map-like object */
+  private extractFilesFromBasesResults(controller: BasesControllerLike): TFile[] {
+    const results = controller.results as ResultsMapLike | undefined;
+    if (!results || typeof results.keys !== "function") return [];
+
+    const files: TFile[] = [];
+    for (const key of results.keys()) {
+      if (key instanceof TFile) files.push(key);
+    }
+    return files.sort((a, b) => a.path.localeCompare(b.path));
   }
 
   /** Resolve a text node as a search query against vault metadata */
