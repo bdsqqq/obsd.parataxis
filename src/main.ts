@@ -215,13 +215,15 @@ export default class ParataxisPlugin extends Plugin {
       }
 
       let changed = false;
+      const allNewNodeIds: string[] = [];
       for (const binding of bindings) {
         const result = await this.processBinding(canvas, binding, mode);
-        if (result) changed = true;
+        if (result.changed) changed = true;
+        allNewNodeIds.push(...result.newNodeIds);
       }
-
       if (changed) {
         await this.app.vault.modify(file, JSON.stringify(canvas, null, "\t"));
+        void this.autoResizeNodes(allNewNodeIds);
         new Notice(`Parataxis: ${mode === "update" ? "updated" : "regenerated"} ${bindings.length} group(s).`);
       } else if (this.settings.verboseNotices) {
         new Notice("Parataxis: no changes needed.");
@@ -346,6 +348,56 @@ export default class ParataxisPlugin extends Plugin {
     return files.sort((a, b) => a.path.localeCompare(b.path));
   }
 
+  /**
+   * Auto-resize newly created file nodes to fit their rendered content.
+   * Waits for the canvas to re-render from the modified JSON, then
+   * measures each node's markdown preview container at natural height.
+   */
+  private async autoResizeNodes(nodeIds: string[]): Promise<void> {
+    if (nodeIds.length === 0) return;
+
+    // wait for canvas to re-render from the modified JSON
+    await new Promise<void>((r) => window.setTimeout(r, 200));
+
+    const activeLeaf = this.app.workspace.getMostRecentLeaf();
+    // @ts-expect-error — canvas is an internal property on the canvas view
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+    const canvas: {
+      nodes?: Map<string, {
+        nodeEl?: HTMLElement;
+        getData?: () => Record<string, unknown>;
+        setData?: (data: Record<string, unknown>) => void;
+      }>;
+    } | undefined = activeLeaf?.view?.canvas;
+
+    if (!canvas?.nodes) return;
+
+    const idSet = new Set(nodeIds);
+    for (const [id, node] of canvas.nodes) {
+      if (!idSet.has(id)) continue;
+      if (!node.nodeEl || !node.getData || !node.setData) continue;
+
+      const container = node.nodeEl.querySelector(".markdown-preview-view");
+      if (!(container instanceof HTMLElement)) continue;
+
+      // measure natural content height — direct style manipulation required
+      // for the measure-then-restore pattern (no CSS class equivalent)
+      // eslint-disable-next-line obsidianmd/no-static-styles-assignment
+      container.style.height = "min-content";
+      const naturalHeight = container.clientHeight;
+      // eslint-disable-next-line obsidianmd/no-static-styles-assignment
+      container.style.height = "";
+
+      if (naturalHeight > 0) {
+        const data = node.getData();
+        const currentHeight = (data.height as number) ?? 0;
+        if (naturalHeight !== currentHeight) {
+          node.setData({ ...data, height: naturalHeight });
+        }
+      }
+    }
+  }
+
   /** Resolve a text node as a search query against vault metadata */
   resolveSearch(node: CanvasNode): TFile[] {
     const query = node.text?.trim();
@@ -404,9 +456,9 @@ export default class ParataxisPlugin extends Plugin {
     canvas: CanvasData,
     binding: ParataxisBinding,
     mode: "update" | "regenerate"
-  ): Promise<boolean> {
+  ): Promise<{ changed: boolean; newNodeIds: string[] }> {
     const sourceType = this.classifySource(binding.sourceNode);
-    if (!sourceType) return false;
+    if (!sourceType) return { changed: false, newNodeIds: [] };
 
     const resultFiles = await this.resolveSource(binding.sourceNode, sourceType);
     const resultPaths = new Set(resultFiles.map((f) => f.path));
@@ -431,7 +483,7 @@ export default class ParataxisPlugin extends Plugin {
         ? existingFileNodes.filter((n) => !resultPaths.has(n.file!))
         : [];
 
-    if (toAdd.length === 0 && toRemove.length === 0) return false;
+    if (toAdd.length === 0 && toRemove.length === 0) return { changed: false, newNodeIds: [] };
 
     // Remove stale nodes
     if (toRemove.length > 0 && canvas.nodes) {
@@ -446,11 +498,12 @@ export default class ParataxisPlugin extends Plugin {
     }
 
     // Add new nodes to the right within the group
+    let newNodeIds: string[] = [];
     if (toAdd.length > 0) {
-      this.addNodesToGroup(canvas, binding.targetGroup, toAdd);
+      newNodeIds = this.addNodesToGroup(canvas, binding.targetGroup, toAdd);
     }
 
-    return true;
+    return { changed: true, newNodeIds };
   }
 
   /** Check if a node's position falls within a group's bounds */
@@ -463,8 +516,8 @@ export default class ParataxisPlugin extends Plugin {
     );
   }
 
-  /** Add file nodes to a group, arranged to the right of existing content */
-  addNodesToGroup(canvas: CanvasData, group: CanvasNode, files: TFile[]) {
+  /** Add file nodes to a group, arranged to the right of existing content. Returns new node IDs. */
+  addNodesToGroup(canvas: CanvasData, group: CanvasNode, files: TFile[]): string[] {
     if (!canvas.nodes) canvas.nodes = [];
 
     const NODE_WIDTH = 250;
@@ -485,13 +538,16 @@ export default class ParataxisPlugin extends Plugin {
     }
 
     const startY = group.y + PADDING + 30; // 30px offset for group label
+    const newIds: string[] = [];
 
     for (let i = 0; i < files.length; i++) {
       const x = startX + i * (NODE_WIDTH + GAP);
       const y = startY;
+      const id = this.generateId();
+      newIds.push(id);
 
       canvas.nodes.push({
-        id: this.generateId(),
+        id,
         type: "file",
         file: files[i].path,
         x,
@@ -512,6 +568,8 @@ export default class ParataxisPlugin extends Plugin {
     if (neededHeight > group.height) {
       group.height = neededHeight;
     }
+
+    return newIds;
   }
 
   /** Generate a unique ID for canvas nodes */
