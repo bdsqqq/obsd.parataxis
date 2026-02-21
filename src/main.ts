@@ -1,5 +1,4 @@
 import { Menu, Notice, Plugin, TFile } from "obsidian";
-import type { ViewState, WorkspaceLeaf } from "obsidian";
 import { around } from "monkey-around";
 import { DEFAULT_SETTINGS } from "./defaults";
 import { ParataxisSettingTab } from "./settings";
@@ -23,12 +22,6 @@ type ResultsMapLike = {
   size: number;
 };
 
-/** Shape of the internal BasesView state stored on the leaf */
-type BasesViewStateLike = {
-  file?: string;
-  viewName?: string;
-};
-
 export default class ParataxisPlugin extends Plugin {
   settings: ParataxisSettings = DEFAULT_SETTINGS;
 
@@ -38,18 +31,8 @@ export default class ParataxisPlugin extends Plugin {
   /** concurrent execution guard for processCanvasFile */
   private processing = false;
 
-  /**
-   * depth counter — positive while resolveBase is manipulating hidden tabs.
-   * file-open events fired by our own setActiveLeaf/detach are suppressed
-   * when this is > 0, breaking the open→process→open→process loop.
-   */
-  private suppressFileOpen = 0;
-
   /** debounce handle for the file-open auto-trigger */
   private fileOpenTimer = 0;
-
-  /** per-file cooldown — timestamps keyed by canvas path */
-  private lastProcessedAt = new Map<string, number>();
 
   async onload() {
     await this.loadSettings();
@@ -74,13 +57,9 @@ export default class ParataxisPlugin extends Plugin {
     this.registerEvent(
       this.app.workspace.on("file-open", (file) => {
         if (!file || file.extension !== "canvas") return;
-        if (this.suppressFileOpen > 0) return;
 
         window.clearTimeout(this.fileOpenTimer);
         this.fileOpenTimer = window.setTimeout(() => {
-          if (this.suppressFileOpen > 0) return;
-          const last = this.lastProcessedAt.get(file.path) ?? 0;
-          if (performance.now() - last < 2_000) return;
           void this.processCanvasFile(file, "update");
         }, 500);
       })
@@ -249,7 +228,6 @@ export default class ParataxisPlugin extends Plugin {
       }
     } finally {
       window.clearTimeout(this.fileOpenTimer);
-      this.lastProcessedAt.set(file.path, performance.now());
       this.processing = false;
     }
   }
@@ -312,128 +290,48 @@ export default class ParataxisPlugin extends Plugin {
   }
 
   /**
-   * Query a .base file for its matching files by opening it in a background
-   * leaf and reading controller.results after they settle.
+   * Read query results from a .base file node already rendered on the
+   * active canvas. The canvas embeds each file node as a child view —
+   * for .base files that child holds a controller whose results Map
+   * keys are the matching TFile instances.
    *
-   * There is no headless API for evaluating Bases — this workaround opens
-   * the Base in a new tab, polls the internal controller until results
-   * arrive or a timeout elapses, then extracts TFiles and cleans up.
-   *
-   * @see https://forum.obsidian.md/t/provide-api-access-to-the-results-of-bases-view/110660
+   * No hidden tabs, no file-open side effects.
    */
   async resolveBase(node: CanvasNode): Promise<TFile[]> {
     if (!node.file) return [];
 
-    const baseFile = this.app.vault.getAbstractFileByPath(node.file);
-    if (!(baseFile instanceof TFile)) {
-      new Notice(`Parataxis: base file not found: ${node.file}`);
+    const activeLeaf = this.app.workspace.getMostRecentLeaf();
+    // @ts-expect-error — canvas is an internal property on the canvas view
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+    const canvas: { nodes?: Map<string, { child?: { controller?: BasesControllerLike } }> } | undefined =
+      activeLeaf?.view?.canvas;
+
+    if (!canvas?.nodes) {
+      new Notice("Parataxis: no active canvas view.");
       return [];
     }
 
-    // subpath selects a named view (e.g. "#Read" → view "Read")
-    const viewName = node.subpath?.replace(/^#/, "") || undefined;
-
-    const TIMEOUT_MS = 5_000;
-    const POLL_MS = 50;
-
-    const previousLeaf = this.app.workspace.getMostRecentLeaf();
-    let leaf: WorkspaceLeaf | null = null;
-
-    this.suppressFileOpen++;
-    try {
-      leaf = this.app.workspace.getLeaf("tab");
-
-      // append fragment so Bases opens the correct named view
-      const linktext = viewName ? `${baseFile.path}#${viewName}` : baseFile.path;
-      await this.app.workspace.openLinkText(
-        linktext,
-        baseFile.path,
-        false,
-        { active: false }
-      );
-
-      // wait for the BasesView controller to appear and produce results
-      const controller = await this.pollBasesController(leaf, TIMEOUT_MS, POLL_MS, viewName);
-      if (!controller) {
-        new Notice("Parataxis: base query timed out waiting for results.");
-        return [];
-      }
-
-      return this.extractFilesFromBasesResults(controller);
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      new Notice(`Parataxis: base query failed — ${msg}`);
+    const liveNode = canvas.nodes.get(node.id);
+    if (!liveNode?.child) {
+      new Notice("Parataxis: base node not rendered — scroll it into view and retry.");
       return [];
-    } finally {
-      try {
-        if (leaf && previousLeaf && previousLeaf !== leaf) {
-          this.app.workspace.setActiveLeaf(previousLeaf, { focus: true });
-        }
-      } catch { /* ignore */ }
-
-      try {
-        leaf?.detach();
-      } catch { /* ignore */ }
-
-      // release suppression on next macrotask — covers async file-open
-      // dispatch from setActiveLeaf/detach across obsidian versions
-      window.setTimeout(() => { this.suppressFileOpen--; }, 0);
-    }
-  }
-
-  /**
-   * Poll a leaf until its BasesView controller has settled results.
-   * When viewName is provided, also verifies the leaf loaded the correct
-   * named view before accepting results — prevents reading the wrong
-   * view's data when two edges target the same .base with different subpaths.
-   */
-  private async pollBasesController(
-    leaf: WorkspaceLeaf,
-    timeoutMs: number,
-    pollMs: number,
-    viewName?: string
-  ): Promise<BasesControllerLike | null> {
-    const deadline = performance.now() + timeoutMs;
-
-    while (performance.now() < deadline) {
-      const vs: ViewState = leaf.getViewState();
-      if (vs.type === "bases") {
-        // when a specific view was requested, wait until it loads
-        if (viewName) {
-          const state = (vs.state ?? {}) as BasesViewStateLike;
-          if (state.viewName !== viewName) {
-            await new Promise<void>((r) => window.setTimeout(r, pollMs));
-            continue;
-          }
-        }
-
-        // @ts-expect-error — controller is an internal Bases property not in public API
-        const controller = leaf.view.controller as BasesControllerLike | undefined;
-        if (controller?.results && typeof (controller.results as ResultsMapLike).keys === "function") {
-          // settled once initialScan flips to false, or best-effort on timeout
-          if (controller.initialScan === false) return controller;
-        }
-      }
-      await new Promise<void>((r) => window.setTimeout(r, pollMs));
     }
 
-    // best-effort: return controller even if initialScan hasn't finished
-    const vs: ViewState = leaf.getViewState();
-    if (vs.type === "bases") {
-      // don't return best-effort results from the wrong view
-      if (viewName) {
-        const state = (vs.state ?? {}) as BasesViewStateLike;
-        if (state.viewName !== viewName) return null;
-      }
+    const controller = liveNode.child.controller;
+    if (!controller) {
+      new Notice("Parataxis: base has no query controller.");
+      return [];
+    }
 
-      // @ts-expect-error — controller is an internal Bases property not in public API
-      const controller = leaf.view.controller as BasesControllerLike | undefined;
-      if (controller?.results && typeof (controller.results as ResultsMapLike).keys === "function") {
-        return controller;
+    // brief poll if initial scan hasn't settled yet
+    if (controller.initialScan !== false) {
+      const deadline = performance.now() + 3_000;
+      while (controller.initialScan !== false && performance.now() < deadline) {
+        await new Promise<void>((r) => window.setTimeout(r, 50));
       }
     }
 
-    return null;
+    return this.extractFilesFromBasesResults(controller);
   }
 
   /** Extract TFile instances from the controller.results Map-like object */
