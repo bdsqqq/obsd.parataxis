@@ -35,6 +35,12 @@ export default class ParataxisPlugin extends Plugin {
   /** tracks canvas prototypes already patched to avoid double-patching addEdge */
   private patchedCanvasPrototypes = new WeakSet<object>();
 
+  /**
+   * re-entrancy guard — resolveBase opens/closes hidden tabs which fires
+   * file-open back on the canvas, creating an infinite loop without this.
+   */
+  private processing = false;
+
   async onload() {
     await this.loadSettings();
     this.addSettingTab(new ParataxisSettingTab(this.app, this));
@@ -192,34 +198,41 @@ export default class ParataxisPlugin extends Plugin {
 
   /** Process a specific canvas file */
   async processCanvasFile(file: TFile, mode: "update" | "regenerate") {
-    const raw = await this.app.vault.read(file);
-    let canvas: CanvasData;
+    if (this.processing) return;
+    this.processing = true;
+
     try {
-      canvas = JSON.parse(raw) as CanvasData;
-    } catch {
-      new Notice("Failed to parse canvas file.");
-      return;
-    }
-
-    const bindings = this.findBindings(canvas);
-    if (bindings.length === 0) {
-      if (this.settings.verboseNotices) {
-        new Notice(`No edges labeled "${this.settings.edgeLabel}" found.`);
+      const raw = await this.app.vault.read(file);
+      let canvas: CanvasData;
+      try {
+        canvas = JSON.parse(raw) as CanvasData;
+      } catch {
+        new Notice("Failed to parse canvas file.");
+        return;
       }
-      return;
-    }
 
-    let changed = false;
-    for (const binding of bindings) {
-      const result = await this.processBinding(canvas, binding, mode);
-      if (result) changed = true;
-    }
+      const bindings = this.findBindings(canvas);
+      if (bindings.length === 0) {
+        if (this.settings.verboseNotices) {
+          new Notice(`No edges labeled "${this.settings.edgeLabel}" found.`);
+        }
+        return;
+      }
 
-    if (changed) {
-      await this.app.vault.modify(file, JSON.stringify(canvas, null, "\t"));
-      new Notice(`Parataxis: ${mode === "update" ? "updated" : "regenerated"} ${bindings.length} group(s).`);
-    } else if (this.settings.verboseNotices) {
-      new Notice("Parataxis: no changes needed.");
+      let changed = false;
+      for (const binding of bindings) {
+        const result = await this.processBinding(canvas, binding, mode);
+        if (result) changed = true;
+      }
+
+      if (changed) {
+        await this.app.vault.modify(file, JSON.stringify(canvas, null, "\t"));
+        new Notice(`Parataxis: ${mode === "update" ? "updated" : "regenerated"} ${bindings.length} group(s).`);
+      } else if (this.settings.verboseNotices) {
+        new Notice("Parataxis: no changes needed.");
+      }
+    } finally {
+      this.processing = false;
     }
   }
 
