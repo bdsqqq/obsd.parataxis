@@ -197,7 +197,9 @@ export default class ParataxisPlugin extends Plugin {
 
     const bindings = this.findBindings(canvas);
     if (bindings.length === 0) {
-      new Notice(`No edges labeled "${this.settings.edgeLabel}" found.`);
+      if (this.settings.verboseNotices) {
+        new Notice(`No edges labeled "${this.settings.edgeLabel}" found.`);
+      }
       return;
     }
 
@@ -210,7 +212,7 @@ export default class ParataxisPlugin extends Plugin {
     if (changed) {
       await this.app.vault.modify(file, JSON.stringify(canvas, null, "\t"));
       new Notice(`Parataxis: ${mode === "update" ? "updated" : "regenerated"} ${bindings.length} group(s).`);
-    } else {
+    } else if (this.settings.verboseNotices) {
       new Notice("Parataxis: no changes needed.");
     }
   }

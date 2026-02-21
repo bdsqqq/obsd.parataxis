@@ -20,7 +20,7 @@ function createPlugin(opts?: {
   for (const f of files) filesByPath.set(f.path, f);
 
   const plugin = new ParataxisPlugin();
-  plugin.settings = { edgeLabel: "parataxis" };
+  plugin.settings = { edgeLabel: "parataxis", verboseNotices: false };
   plugin.app = {
     vault: {
       getMarkdownFiles: () => files,

@@ -4,6 +4,8 @@ import type { TFile } from "obsidian";
 export interface ParataxisSettings {
   /** The edge label that triggers parataxis processing */
   edgeLabel: string;
+  /** Show notices when no parataxis edges are found on a canvas */
+  verboseNotices: boolean;
 }
 
 /** A node in the JSON Canvas format */

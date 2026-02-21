@@ -26,5 +26,17 @@ export class ParataxisSettingTab extends PluginSettingTab {
             await this.plugin.saveSettings();
           })
       );
+
+    new Setting(containerEl)
+      .setName("Verbose notices")
+      .setDesc("Show notices even when no parataxis edges are found on a canvas.")
+      .addToggle((toggle) =>
+        toggle
+          .setValue(this.plugin.settings.verboseNotices)
+          .onChange(async (value) => {
+            this.plugin.settings.verboseNotices = value;
+            await this.plugin.saveSettings();
+          })
+      );
   }
 }
