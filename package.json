@@ -11,7 +11,9 @@
   },
   "license": "MIT",
   "pnpm": {
-    "onlyBuiltDependencies": ["esbuild"]
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
   },
   "devDependencies": {
     "@types/node": "^18.0.0",
@@ -24,5 +26,8 @@
     "obsidian": "^1.8.0",
     "typescript": "^5.4.0",
     "vitest": "^3.2.1"
+  },
+  "dependencies": {
+    "monkey-around": "^3.0.0"
   }
 }

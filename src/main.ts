@@ -1,5 +1,6 @@
-import { Notice, Plugin, TFile } from "obsidian";
+import { Menu, Notice, Plugin, TFile } from "obsidian";
 import type { ViewState, WorkspaceLeaf } from "obsidian";
+import { around } from "monkey-around";
 import { DEFAULT_SETTINGS } from "./defaults";
 import { ParataxisSettingTab } from "./settings";
 import type {
@@ -24,6 +25,9 @@ type ResultsMapLike = {
 
 export default class ParataxisPlugin extends Plugin {
   settings: ParataxisSettings = DEFAULT_SETTINGS;
+
+  /** tracks canvas prototypes already patched to avoid double-patching addEdge */
+  private patchedCanvasPrototypes = new WeakSet<object>();
 
   async onload() {
     await this.loadSettings();
@@ -54,6 +58,109 @@ export default class ParataxisPlugin extends Plugin {
         }
       })
     );
+
+    // patch canvas views to detect edge labeling in real time
+    this.registerEvent(
+      this.app.workspace.on("layout-change", () => {
+        this.app.workspace.iterateAllLeaves((leaf) => {
+          // @ts-expect-error — canvas is an internal property on the canvas view
+          // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+          const canvas: { constructor: { prototype: object }; edges: Map<string, object> } | undefined = leaf.view?.canvas;
+          if (canvas) this.patchCanvas(canvas);
+        });
+      })
+    );
+
+    // right-click context menu on canvas nodes
+    this.registerEvent(
+      this.app.workspace.on(
+        // @ts-expect-error — canvas:node-menu is undocumented but stable
+        "canvas:node-menu",
+        (menu: Menu, node: unknown) => {
+          void node;
+          menu.addItem((item) => {
+            item
+              // eslint-disable-next-line obsidianmd/ui/sentence-case
+              .setTitle("Parataxis: Update")
+              .setIcon("workflow")
+              .onClick(() => {
+                const activeFile = this.app.workspace.getActiveFile();
+                if (activeFile?.extension === "canvas") {
+                  void this.processCanvasFile(activeFile, "update");
+                }
+              });
+          });
+          menu.addItem((item) => {
+            item
+              // eslint-disable-next-line obsidianmd/ui/sentence-case
+              .setTitle("Parataxis: Regenerate")
+              .setIcon("refresh-cw")
+              .onClick(() => {
+                const activeFile = this.app.workspace.getActiveFile();
+                if (activeFile?.extension === "canvas") {
+                  void this.processCanvasFile(activeFile, "regenerate");
+                }
+              });
+          });
+        }
+      )
+    );
+  }
+
+  /** monkey-patch a canvas prototype so new edges trigger processing on label match */
+  private patchCanvas(canvas: { constructor: { prototype: object }; edges: Map<string, object> }) {
+    const proto = canvas.constructor.prototype;
+    if (this.patchedCanvasPrototypes.has(proto)) return;
+    this.patchedCanvasPrototypes.add(proto);
+
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+    const patchEdgeBound: (edge: Record<string, (...args: unknown[]) => unknown>) => void =
+      this.patchEdge.bind(this);
+    const uninstallAddEdge = around(proto as Record<string, (...args: unknown[]) => unknown>, {
+      addEdge(next) {
+        return function (this: unknown, edge: unknown) {
+          // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+          const result = next.call(this, edge);
+          patchEdgeBound(edge as Record<string, (...args: unknown[]) => unknown>);
+          // eslint-disable-next-line @typescript-eslint/no-unsafe-return
+          return result;
+        };
+      },
+    });
+    this.register(uninstallAddEdge);
+
+    // patch edges already present on this canvas
+    for (const [, edge] of canvas.edges) {
+      this.patchEdge(edge as Record<string, (...args: unknown[]) => unknown>);
+    }
+  }
+
+  /** monkey-patch an individual edge's setData to detect label changes */
+  private patchEdge(edge: Record<string, (...args: unknown[]) => unknown>) {
+    const getSettings = () => this.settings;
+    const getActiveFile = () => this.app.workspace.getActiveFile();
+    const processFile = (file: TFile, mode: "update" | "regenerate") => this.processCanvasFile(file, mode);
+    const uninstall = around(edge, {
+      setData(next) {
+        return function (this: unknown, data: unknown, ...args: unknown[]) {
+          // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+          const result = next.call(this, data, ...args);
+          const d = data as { label?: string } | null;
+          if (
+            typeof d?.label === "string" &&
+            d.label.toLowerCase() === getSettings().edgeLabel.toLowerCase()
+          ) {
+            const activeFile = getActiveFile();
+            if (activeFile?.extension === "canvas") {
+              void processFile(activeFile, "update");
+            }
+          }
+          // eslint-disable-next-line @typescript-eslint/no-unsafe-return
+          return result;
+        };
+      },
+    });
+    this.register(uninstall);
   }
 
   onunload() {}
