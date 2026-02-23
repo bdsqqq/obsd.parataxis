@@ -260,8 +260,20 @@ export default class ParataxisPlugin extends Plugin {
 
   /**
    * Auto-resize newly created file nodes to fit their rendered content.
-   * Waits for the canvas to re-render from the modified JSON, then
-   * measures each node's markdown preview container at natural height.
+   *
+   * After vault.modify() writes updated JSON, the canvas reloads and
+   * creates new DOM for each node. File nodes render markdown content
+   * asynchronously — .markdown-preview-view appears immediately as an
+   * empty shell, but the inner .markdown-preview-sizer only gets
+   * children once the markdown renderer finishes. We poll for that
+   * inner readiness, then use scrollHeight (which reports full content
+   * height regardless of overflow constraints) to avoid the fragile
+   * setCssStyles + clientHeight measurement that previously failed.
+   *
+   * The node's total height includes "chrome" (title bar, padding,
+   * borders) around the content area. We compute chrome as the delta
+   * between nodeEl.offsetHeight and previewView.clientHeight, then
+   * add it to the content's scrollHeight.
    */
   private async autoResizeNodes(nodeIds: string[]): Promise<void> {
     if (nodeIds.length === 0) return;
@@ -272,49 +284,66 @@ export default class ParataxisPlugin extends Plugin {
       setData?: (data: Record<string, unknown>) => void;
     };
 
-    const getCanvas = (): Map<string, LiveNode> | undefined => {
-      const leaf = this.app.workspace.getMostRecentLeaf();
-      // @ts-expect-error — canvas is an internal property on the canvas view
-      const canvasObj = leaf?.view?.canvas as
-        | { nodes?: Map<string, LiveNode> }
-        | undefined;
-      return canvasObj?.nodes;
+    type LiveCanvas = {
+      nodes?: Map<string, LiveNode>;
+      requestSave?: () => void;
     };
 
-    // poll until at least one new node is rendered (has markdown preview DOM)
+    const getCanvas = (): LiveCanvas | undefined => {
+      const leaf = this.app.workspace.getMostRecentLeaf();
+      // @ts-expect-error — canvas is an internal property on the canvas view
+      return leaf?.view?.canvas as LiveCanvas | undefined;
+    };
+
+    // poll until at least one new node has rendered markdown content.
+    // .markdown-preview-sizer with children means the renderer finished,
+    // vs .markdown-preview-view which exists as an empty shell immediately.
     const sampleId = nodeIds[0];
-    const deadline = performance.now() + 2_000;
+    const deadline = performance.now() + 5_000;
     while (performance.now() < deadline) {
-      const nodes = getCanvas();
-      const sample = nodes?.get(sampleId);
-      if (sample?.nodeEl?.querySelector(".markdown-preview-view")) break;
-      await new Promise<void>((r) => window.setTimeout(r, 50));
+      const canvas = getCanvas();
+      const sample = canvas?.nodes?.get(sampleId);
+      const sizer = sample?.nodeEl?.querySelector(".markdown-preview-sizer");
+      if (sizer instanceof HTMLElement && sizer.childElementCount > 0) break;
+      await new Promise<void>((r) => window.setTimeout(r, 100));
     }
 
-    const canvasNodes = getCanvas();
-    if (!canvasNodes) return;
+    // one extra frame to ensure layout is fully computed after content render
+    await new Promise<void>((r) => window.requestAnimationFrame(() => r()));
+
+    const canvas = getCanvas();
+    if (!canvas?.nodes) return;
 
     const idSet = new Set(nodeIds);
-    for (const [id, node] of canvasNodes) {
+    let anyResized = false;
+    for (const [id, node] of canvas.nodes) {
       if (!idSet.has(id)) continue;
       if (!node.nodeEl || !node.getData || !node.setData) continue;
 
-      const container = node.nodeEl.querySelector(".markdown-preview-view");
-      if (!(container instanceof HTMLElement)) continue;
+      const previewView = node.nodeEl.querySelector(".markdown-preview-view");
+      if (!(previewView instanceof HTMLElement)) continue;
 
-      // measure natural content height — setCssStyles is Obsidian's
-      // augmentation on HTMLElement for lint-safe style manipulation
-      container.setCssStyles({ height: "min-content" });
-      const naturalHeight = container.clientHeight;
-      container.setCssStyles({ height: "" });
+      const sizer = previewView.querySelector(".markdown-preview-sizer");
+      if (!(sizer instanceof HTMLElement)) continue;
 
-      if (naturalHeight > 0) {
-        const data = node.getData();
-        const currentHeight = (data.height as number) ?? 0;
-        if (naturalHeight !== currentHeight) {
-          node.setData({ ...data, height: naturalHeight });
-        }
+      const contentHeight = sizer.scrollHeight;
+      if (contentHeight <= 0) continue;
+
+      // chrome = title bar + padding + borders around the content area
+      const chrome = node.nodeEl.offsetHeight - previewView.clientHeight;
+      const naturalHeight = contentHeight + Math.max(chrome, 0);
+
+      const data = node.getData();
+      const currentHeight = (data.height as number) ?? 0;
+      if (Math.abs(naturalHeight - currentHeight) > 2) {
+        node.setData({ ...data, height: naturalHeight });
+        anyResized = true;
       }
+    }
+
+    // persist dimension changes so they survive canvas reload
+    if (anyResized) {
+      canvas.requestSave?.();
     }
   }
 
